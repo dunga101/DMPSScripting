@@ -1,0 +1,15 @@
+foreach ($user in @(
+    "habbad@statecorp.com",
+    "habbad@statewindowcorp.com",
+    "mbejarano@statewindowcorp.com",
+    "sgewargis@staterailing.com",
+    "cavinash@statecorp.com",
+    "mbejarano@statecorp.com"
+)) {
+    Write-Host "`n======================" -ForegroundColor Cyan
+    Write-Host "Mailbox: $user" -ForegroundColor Yellow
+    Write-Host "======================`n" -ForegroundColor Cyan
+
+    $root = Get-MailboxFolderStatistics -Identity $user
+    $root | Sort-Object ItemsInFolder -Descending | Format-Table FolderPath, ItemsInFolder
+}

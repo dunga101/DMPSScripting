@@ -1,0 +1,136 @@
+# Windows 11 Enterprise Diagnostic Toolkit v5.2.2 (FINAL STABLE - Background Resilient Monitoring + 15 Day Retention with GPResult Fix)
+# Author: ChatGPT & Dulanga Mudalige (May 2025) 
+
+param(
+    [bool]$Enable48HourMonitoring = $false
+)
+
+$reportDir = "C:\PerfReports"
+if (-not (Test-Path $reportDir)) {
+    New-Item -ItemType Directory -Path $reportDir | Out-Null
+}
+
+$computerName = $env:COMPUTERNAME
+$reportPath = "$reportDir\$computerName`_PerformanceReport.html"
+$summaryPath = "$reportDir\$computerName`_Summary.txt"
+$monitorFile = "$reportDir\$computerName`_48HourMonitor.csv"
+$monitorFlag = "$reportDir\$computerName`_48HourCompleted.flag"
+$alerts = @()
+$recommendations = @()
+
+function Add-ReportSection($title, $content) {
+    $global:reportContent += "<h2>$title</h2>"
+    $global:reportContent += "<pre>$content</pre>"
+}
+
+function Add-Alert($message, $recommendation) {
+    $global:alerts += "WARNING: $message"
+    $global:recommendations += "RECOMMENDATION: $recommendation"
+}
+
+function VisualBar($value, $max, $threshold1, $threshold2) {
+    $percent = [math]::Round(($value / $max) * 100)
+    if ($value -lt $threshold1) { $color = "green" } elseif ($value -lt $threshold2) { $color = "orange" } else { $color = "red" }
+    return "<div style='background-color:$color;width:$percent%;height:20px;'></div> $value"
+}
+
+# --- SYSTEM INFO ---
+$reportContent = @()
+$sysInfo = Get-ComputerInfo | Select-Object OSName, OSVersion, OsArchitecture, CsName, WindowsProductName
+Add-ReportSection "System Information" ($sysInfo | Out-String)
+
+# --- WINDOWS UPDATE ---
+$wuLog = "$env:USERPROFILE\Desktop\WindowsUpdate.log"
+Get-WindowsUpdateLog -LogPath $wuLog
+Add-ReportSection "Windows Update Log" "WindowsUpdate.log written to Desktop. Review for recent patches/updates."
+
+# --- SOFTWARE INSTALLED (last 30 days) ---
+$softwareChanges = Get-WmiObject Win32_Product | Where-Object { $_.InstallDate -gt [datetime]::Now.AddDays(-30) }
+if ($softwareChanges.Count -gt 0) {
+    Add-ReportSection "Software Installed/Changed (Last 30 days)" ($softwareChanges | Select-Object Name, Version, InstallDate | Out-String)
+    Add-Alert "Recent software installs detected", "Review recent installs for possible performance impact."
+} else {
+    Add-ReportSection "Software Installed/Changed" "No recent changes."
+}
+
+# --- DISK HEALTH ---
+$diskHealth = Get-PhysicalDisk | Select-Object FriendlyName, MediaType, HealthStatus, OperationalStatus
+Add-ReportSection "Disk Health Status" ($diskHealth | Out-String)
+if ($diskHealth.HealthStatus -contains "Unhealthy") {
+    Add-Alert "Disk health is not optimal", "Consider disk replacement or backup."
+}
+
+# --- GROUP POLICY ---
+$gpReportPath = "$reportDir\$computerName`_GPResult.html"
+gpresult /h $gpReportPath /f
+Add-ReportSection "Group Policy Result" "Saved to $gpReportPath"
+
+# --- FILE SERVER PING TEST ---
+$fileServer = "192.168.16.25"
+$pingResults = Test-Connection -ComputerName $fileServer -Count 10 -ErrorAction SilentlyContinue
+if ($pingResults) {
+    $avg = ($pingResults | Measure-Object -Property ResponseTime -Average).Average
+    Add-ReportSection "File Server Network Test" (VisualBar $avg 300 100 200)
+    if ($avg -gt 100) { Add-Alert "File Server latency high", "Check network and server performance." }
+} else {
+    Add-Alert "File Server unreachable", "Verify server status and network connectivity." 
+}
+
+# --- 48-HOUR MONITORING TASK INSTALLER ---
+if ($Enable48HourMonitoring) {
+    Write-Output "Scheduling 48-Hour Monitor Task..."
+    $taskScript = @"
+while (\$(Get-Date) -lt \$(Get-Date).AddHours(48)) {
+    \$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    \$topProc = Get-Process | Sort-Object CPU -Descending | Select-Object -First 1 Name
+    \$wifiSignal = (netsh wlan show interfaces) -match "Signal" | ForEach-Object { (\$_ -split ":")[1].Trim().Replace("%","") }
+    if (-not \$wifiSignal) { \$wifiSignal = 0 }
+    \$internetPing = Test-Connection -ComputerName "8.8.8.8" -Count 1 -ErrorAction SilentlyContinue
+    if (\$internetPing) { \$internetLatency = \$internetPing.ResponseTime } else { \$internetLatency = 999 }
+    "\$timestamp, \$topProc, WiFi Signal: \$wifiSignal, Internet Ping: \$internetLatency" | Out-File -Append "$monitorFile"
+    Start-Sleep -Seconds 300
+}
+New-Item "$monitorFlag" -ItemType File
+"@ 
+    $taskScriptPath = "$reportDir\monitor.ps1"
+    $taskScript | Out-File -FilePath $taskScriptPath -Encoding UTF8
+
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File '$taskScriptPath'"
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
+    Register-ScheduledTask -TaskName "DiagMonitor_$computerName" -Action $action -Trigger $trigger -RunLevel Highest -Force
+
+    Add-ReportSection "48-Hour Monitor" "Scheduled and running. Monitor file updating live at $monitorFile"
+}
+
+# --- FINAL REPORT IF MONITOR COMPLETED ---
+if ((Test-Path $monitorFlag) -or (-not $Enable48HourMonitoring)) {
+    Add-ReportSection "Finalization" "48-hour monitor completed or not selected."
+    $html = @"
+<html><head><title>Performance Report</title><style>body{font-family:sans-serif;}h1{color:#004080;}h2{color:#0070C0;}pre{background:#f0f0f0;padding:10px;}div{margin:5px 0;}p{margin:5px 0;}svg{border:1px solid #ccc;margin-bottom:20px;}</style></head><body><h1>Performance Diagnostic - $computerName</h1>
+"@
+    if ($alerts.Count -gt 0) { $html += "<h2>Alerts and Warnings</h2>" + ($alerts -join "<br>") }
+    $html += ($reportContent -join "`n") + "</body></html>"
+    $html | Out-File -FilePath $reportPath -Encoding UTF8
+
+    $summaryOutput = @()
+    $summaryOutput += "Performance Summary for $computerName"
+    $summaryOutput += "Generated: $(Get-Date)"
+    $summaryOutput += "-------------------------------------------"
+    $summaryOutput += $alerts
+    $summaryOutput += ""
+    $summaryOutput += "Recommendations:" 
+    $summaryOutput += $recommendations
+    $summaryOutput | Out-File -FilePath $summaryPath -Encoding UTF8
+
+    Write-Output "Summary and HTML report written."
+}
+
+# --- 15 DAY CLEANUP ---
+$cleaner = "$reportDir\cleanup.ps1"
+@"
+Start-Sleep -Seconds 1296000
+Remove-Item -Path '$reportDir' -Recurse -Force -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName 'PerfDiag_Cleanup' -Confirm:\$false -ErrorAction SilentlyContinue
+"@ | Out-File -FilePath $cleaner -Encoding UTF8
+Register-ScheduledTask -TaskName "PerfDiag_Cleanup" -Trigger (New-ScheduledTaskTrigger -AtStartup -RandomDelay 01:00:00) -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File '$cleaner'") -RunLevel Highest -Force
+Write-Output "Stealth cleanup scheduled for 15 days."

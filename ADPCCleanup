@@ -1,0 +1,62 @@
+Import-Module ActiveDirectory
+
+# CONFIGURATION
+$ouDN    = 'OU=SBSComputers,OU=Computers,OU=MyBusiness,DC=Statewindowcorp,DC=local'
+$csvPath = 'C:\Audits\computercleanup.csv'
+
+# Step 1: Import CSV
+try {
+    $computers = Import-Csv -Path $csvPath -ErrorAction Stop
+}
+catch {
+    Write-Error "Cannot read CSV at $csvPath. $_"
+    exit 1
+}
+
+# Step 2: Find matching computer objects
+$toDelete = foreach ($row in $computers) {
+    $name = $row.Name.Trim()
+    if (-not $name) { continue }
+
+    $obj = Get-ADComputer -Filter "Name -eq '$name'" `
+                          -SearchBase $ouDN `
+                          -ErrorAction SilentlyContinue
+    if ($null -eq $obj) {
+        Write-Warning "Not found in OU: $name"
+    }
+    else {
+        [PSCustomObject]@{
+            Name = $obj.Name
+            DN   = $obj.DistinguishedName
+        }
+    }
+}
+
+if (-not $toDelete) {
+    Write-Host "No matching computer accounts found under $ouDN. Exiting."
+    exit 0
+}
+
+# Step 3: Preview with –WhatIf (recursive)
+Write-Host "`n*** THE FOLLOWING OBJECTS WOULD BE REMOVED RECURSIVELY (–WhatIf) ***`n" -ForegroundColor Cyan
+foreach ($item in $toDelete) {
+    Remove-ADObject -Identity $item.DN -Recursive -WhatIf
+}
+
+# Step 4: Confirm
+"`nPress [Enter] to PERFORM the recursive deletion, or Ctrl+C to CANCEL..." | Write-Host -ForegroundColor Yellow
+Read-Host
+
+# Step 5: Actual recursive deletion
+Write-Host "`nDeleting now (this will remove each computer and all child objects) …" -ForegroundColor Green
+foreach ($item in $toDelete) {
+    try {
+        Remove-ADObject -Identity $item.DN -Recursive -Confirm:$false
+        Write-Host "Deleted: $($item.Name)"
+    }
+    catch {
+        Write-Error "Failed to delete $($item.Name): $_"
+    }
+}
+
+Write-Host "`nOperation complete." -ForegroundColor Green

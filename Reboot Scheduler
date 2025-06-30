@@ -1,0 +1,80 @@
+function Get-ValidDayTime {
+    $currentMonth = (Get-Date).Month
+    $currentYear = (Get-Date).Year
+    while ($true) {
+        $dayInput = Read-Host "Enter the day of the month for reboot (1–31)"
+        $timeInput = Read-Host "Enter the time for reboot (24-hour format, e.g., 08:55 or 16:30)"
+
+        if ($dayInput -match '^\d{1,2}$' -and $timeInput -match '^\d{1,2}:\d{2}$') {
+            $dateText = "{0:D2}/{1:D2}/{2}" -f $currentMonth, [int]$dayInput, $currentYear
+            $testDate = "$dateText $timeInput"
+            try {
+                $parsedDate = [datetime]::ParseExact($testDate, "MM/dd/yyyy HH:mm", $null)
+                return @($parsedDate)
+            } catch {
+                Write-Host "❌ Unable to parse the date/time. Please try again." -ForegroundColor Red
+            }
+        } else {
+            Write-Host "❌ Invalid input. Day must be 1–31, time must be HH:mm (24-hour)." -ForegroundColor Red
+        }
+    }
+}
+
+# --- Configuration ---
+$taskName = "OneTimeReboot"
+$cleanupTaskName = "CleanupRebootTask"
+$cleanupFile = "$env:ProgramData\cleanup_reboot_task.bat"
+$rebootCommand = 'shutdown.exe /r /t 0 /f'
+
+# --- Get valid datetime from user ---
+$parsedDate = Get-ValidDayTime
+$scheduledDate = $parsedDate.ToString("yyyy/MM/dd")   # ✅ This fixes the schtasks error
+$rebootTime = $parsedDate.ToString("HH:mm")
+
+# --- Validate UsoClient ---
+$usoPath = "$env:SystemRoot\System32\UsoClient.exe"
+if (-not (Test-Path $usoPath)) {
+    Write-Host "❌ UsoClient.exe not found at $usoPath. Cannot proceed." -ForegroundColor Red
+    exit
+}
+
+# --- Summary ---
+Write-Host "`n🗓 Reboot scheduled for: $scheduledDate at $rebootTime" -ForegroundColor Yellow
+Pause
+
+# --- Trigger Windows Updates ---
+Write-Host "`n🔄 Initiating Windows Updates..." -ForegroundColor Green
+Start-Process -FilePath "UsoClient.exe" -ArgumentList "StartScan" -NoNewWindow
+Start-Sleep -Seconds 10
+Start-Process -FilePath "UsoClient.exe" -ArgumentList "StartDownload" -NoNewWindow
+Start-Sleep -Seconds 10
+Start-Process -FilePath "UsoClient.exe" -ArgumentList "StartInstall" -NoNewWindow
+Write-Host "✅ Updates initiated." -ForegroundColor Green
+
+# --- Schedule Reboot Task ---
+schtasks /create `
+    /tn $taskName `
+    /tr $rebootCommand `
+    /sc once `
+    /st $rebootTime `
+    /sd $scheduledDate `
+    /ru "SYSTEM" `
+    /f
+
+# --- Create Cleanup Script ---
+$cleanupScript = @"
+schtasks /delete /tn "$taskName" /f
+schtasks /delete /tn "$cleanupTaskName" /f
+del "$cleanupFile"
+"@
+Set-Content -Path $cleanupFile -Value $cleanupScript -Encoding ASCII
+
+# --- Schedule Cleanup Task ---
+schtasks /create `
+    /tn $cleanupTaskName `
+    /tr $cleanupFile `
+    /sc onstart `
+    /ru "SYSTEM" `
+    /f
+
+Write-Host "`n✅ All tasks scheduled successfully. System will reboot on $scheduledDate at $rebootTime. Cleanup will follow reboot." -ForegroundColor Cyan

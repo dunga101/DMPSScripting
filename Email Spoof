@@ -1,0 +1,20 @@
+using System.Net.Mail;
+using System.Net;
+ 
+SmtpClient client = new SmtpClient();
+MailMessage message = new MailMessage();
+MailAddress from = new MailAddress("dmudalige@statecorp.com", "Dulanga Mudalige");
+client.Credentials = new NetworkCredential("Dulanga Mudalige", "", "mail.smtp2go.com");
+client.Host = "mail.smtp2go.com";
+client.UseDefaultCredentials = false;
+client.EnableSsl = false;
+message.From = from;
+message.Priority = MailPriority.High;
+ 
+message.To.Add("amazur@statecorp.com");
+message.To.Add("dmudalige@statecorp.com");
+//message.To.Add("dgagliardi@statecorp.com");
+ 
+message.Subject = "Fake Email";
+message.Body = "Fake Email";
+client.Send(message);

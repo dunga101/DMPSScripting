@@ -1,0 +1,51 @@
+# 1) Pull raw timing from 5016 events
+$since = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+$events = Get-WinEvent -FilterHashtable @{
+    LogName   = 'Microsoft-Windows-GroupPolicy/Operational'
+    Id        = 5016
+    StartTime = $since
+}
+
+# 2) Extract timing per GPO name
+$raw = foreach ($e in $events) {
+    $x = [xml]$e.ToXml()
+    $cse = ($x.Event.EventData.Data | Where Name -eq 'CSEExtensionName').'#text'
+    $dur = [int](($x.Event.EventData.Data | Where Name -eq 'CSEElaspedTimeInMilliSeconds').'#text')
+    $gpoText = ($x.Event.EventData.Data | Where Name -eq 'ApplicableGPOList').'#text'
+    $gpoList = $gpoText -split ';'
+
+    foreach ($name in $gpoList) {
+        [PSCustomObject]@{
+            Timestamp  = $e.TimeCreated
+            GPOName    = $name.Trim()
+            CSE        = $cse
+            DurationMs = $dur
+        }
+    }
+}
+
+# 3) Build lookup table of all known GPOs
+Import-Module GroupPolicy -ErrorAction SilentlyContinue
+$knownGPOs = Get-GPO -All
+
+# 4) Enrich by closest name match (case-insensitive)
+$results = foreach ($r in $raw) {
+    $match = $knownGPOs | Where-Object {
+        $_.DisplayName -eq $r.GPOName -or
+        $_.DisplayName -like "*$($r.GPOName)*"
+    } | Select-Object -First 1
+
+    if ($match) {
+        $r | Add-Member NoteProperty GpoGuid       $match.Id.Guid        -Force
+        $r | Add-Member NoteProperty DomainName    $match.DomainName     -Force
+        $r | Add-Member NoteProperty CreationTime  $match.CreationTime   -Force
+        $r | Add-Member NoteProperty GpoStatus     $match.GpoStatus      -Force
+        $r | Add-Member NoteProperty WmiFilterName $match.WmiFilterName  -Force
+    }
+    $r
+}
+
+# 5) Output enriched table
+$results |
+    Sort-Object DurationMs -Descending |
+    Format-Table Timestamp, GPOName, GpoGuid, DomainName, WmiFilterName, CSE, DurationMs -AutoSize

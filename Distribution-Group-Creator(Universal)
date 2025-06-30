@@ -1,0 +1,91 @@
+# Distribution Group Creator Tool
+Import-Module ActiveDirectory
+
+Write-Host "`n=== Distribution Group Creator Tool ===`n" -ForegroundColor Cyan
+
+# Prompt for Group Name
+$GroupName = Read-Host "Enter the Group Name (no spaces or special characters)"
+
+# Check for existing group
+$existingGroup = Get-ADGroup -Filter { Name -eq $GroupName } -ErrorAction SilentlyContinue
+if ($existingGroup) {
+    Write-Host "`n⚠️ A group with the name '$GroupName' already exists. Please choose a different name." -ForegroundColor Red
+    exit
+}
+
+# Define OU
+$OU = "OU=Distribution Groups,OU=MyBusiness,DC=Statewindowcorp,DC=local"
+
+# Create Group
+New-ADGroup -Name $GroupName `
+            -SamAccountName $GroupName `
+            -GroupScope Universal `
+            -GroupCategory Distribution `
+            -Path $OU
+
+Write-Host "`n✅ Group '$GroupName' has been created successfully." -ForegroundColor Green
+
+# Prompt for Email Prefix
+$emailPrefix = Read-Host "Enter the email prefix (e.g., johnsmithgroup)"
+
+$emailAddress = "$emailPrefix@statecorp.com"
+Write-Host "`nEmail address to be set: $emailAddress"
+Read-Host "Press ENTER to confirm"
+
+# Set 'mail' attribute
+Set-ADGroup -Identity $GroupName -Replace @{mail = $emailAddress}
+
+# Construct ProxyAddresses
+$proxyAddresses = @(
+    "SMTP:$emailPrefix@statecorp.com",
+    "smtp:$emailPrefix@statewindowcorp.onmicrosoft.com",
+    "smtp:$emailPrefix@statewindowcorp.mail.onmicrosoft.com"
+)
+
+# Add proxyAddresses to group
+Set-ADGroup -Identity $GroupName -Add @{proxyAddresses = $proxyAddresses}
+
+# Internal or External Access Type
+Write-Host "`nAccess Configuration:"
+Write-Host "Type 'I'  - Internal only"
+Write-Host "Type 'IE' - Internal and External access"
+$accessType = Read-Host "Enter your choice (I / IE)"
+
+switch ($accessType.ToUpper()) {
+    "I" {
+        Set-ADGroup -Identity $GroupName -Replace @{msExchRequireAuthToSendTo = $true}
+        Write-Host "`nConfigured for internal use only." -ForegroundColor Yellow
+    }
+    "IE" {
+        Set-ADGroup -Identity $GroupName -Replace @{msExchRequireAuthToSendTo = $false}
+        Write-Host "`nConfigured for internal and external use." -ForegroundColor Yellow
+    }
+    Default {
+        Write-Host "`nInvalid selection. Skipping MsExchRequireAuthToSendTo setup." -ForegroundColor Red
+    }
+}
+
+# Add Users to Group (One by One, Loop Until Enter)
+Write-Host "`nYou may now add users to the group one at a time."
+Write-Host "Press ENTER without input when done." -ForegroundColor Cyan
+
+while ($true) {
+    $username = Read-Host "Enter AD username to add (or press ENTER to finish)"
+    if ([string]::IsNullOrWhiteSpace($username)) { break }
+
+    $user = Get-ADUser -Identity $username -ErrorAction SilentlyContinue
+    if ($user) {
+        Add-ADGroupMember -Identity $GroupName -Members $user.SamAccountName
+        Write-Host "✅ Added '$username' to the group." -ForegroundColor Green
+    }
+    else {
+        Write-Host "⚠️ User '$username' not found in Active Directory." -ForegroundColor Red
+    }
+}
+
+# Final Reminders
+Write-Host "`n⚠️ Please remember to:"
+Write-Host "- Perform a DUO sync"
+Write-Host "- Perform a Mimecast sync"
+
+Write-Host "`n✅ Distribution Group creation complete." -ForegroundColor Green
